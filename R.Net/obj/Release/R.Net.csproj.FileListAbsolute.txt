@@ -1,0 +1,2 @@
+C:\Work\R.Net\R.Net\bin\Release\R.Net.exe.config
+C:\Work\R.Net\R.Net\obj\Release\R.Net.csprojResolveAssemblyReference.cache

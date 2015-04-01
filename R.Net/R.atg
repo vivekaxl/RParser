@@ -1,0 +1,232 @@
+﻿COMPILER R
+
+	public List<Expression> Expressions = new List<Expression>();
+	private Stack<bool> insideFunctionActuals = new Stack<bool>();
+	//private Func<Expression,Expression> quote = global::R.Net.FunctionCall.Quote;
+
+	// Utility constructor
+	 public Parser(string text)
+        :this(new Scanner(new System.IO.MemoryStream(System.Text.Encoding.ASCII.GetBytes(text))))
+    {
+    }
+	
+CHARACTERS
+	letter			= 'A' .. 'Z' + 'a' .. 'z'.
+	digit			= '0' .. '9'.
+	hexDigit		= digit + "ABCDEF" + "abcdef".
+	beginComment	= '#'.
+	endOfLine		= '\r'.
+	identTail		= letter + digit + "._".
+	singleQuote		= '\''.
+	notSingleQuote	= ANY - singleQuote.
+	doubleQuote		= '"'.
+	notDoubleQuote	= ANY - doubleQuote.
+	backQuote		= '`'.
+	notBackQuote	= ANY - backQuote.
+	escapeChar		= '\\'.
+	anyChar			= ANY.
+	percent			= '%'.
+	notPercent		= ANY - percent.
+	
+TOKENS
+	identifier		= letter { identTail }
+					| '.' letter { identTail }.
+	numericLit		= (digit {digit} [ '.' {digit} [ ('e'|'E') ['+'|'-'] digit {digit} ] ] | "0x" hexDigit {hexDigit}) ['L'|'i'].
+	stringLit		= singleQuote { escapeChar anyChar | notSingleQuote } singleQuote
+					| doubleQuote { escapeChar anyChar | notDoubleQuote } doubleQuote
+					| backQuote { escapeChar anyChar | notBackQuote } backQuote.
+	infixOp			= percent notPercent {notPercent} percent.
+
+
+COMMENTS FROM beginComment TO endOfLine
+
+IGNORE ' ' + '\t' + '\r'
+
+PRODUCTIONS
+
+R = ExprList<this.Expressions>.
+
+ExprList<.List<Expression> es.> = ExprLine<es> { '\n' [ExprLine<es>] }.
+
+ExprLine<.List<Expression> es.>					(. Expression e; .)
+= Expr<out e>									(. es.Add(e); .)
+  { ';' Expr<out e>								(. es.Add(e); .)
+  }
+.
+
+Expr<out Expression expr>						(. expr = null; Expression e1=null, e2=null, e3=null; string s; var args = new List<Identifier>(); var es = new List<Expression>(); .)			
+= "function" '(' {ArgList<args>} ')' Expr<out e1>
+												(. expr = new FunctionExpression(args, e1); .)
+| "if" '(' Expr<out e1> ')' Expr<out e2> [ "else" Expr<out e3> ]
+												(. expr = e3 == null ? new FunctionCall("if", e1, e2) : new FunctionCall("if", e1, e2, e3); .)
+| "while" '(' Expr<out e1> ')' Expr<out e2>		(. expr = new FunctionCall("while", e1, e2); .)
+| "repeat" Expr<out e1>							(. expr = new FunctionCall("repeat", e1); .)
+| "for" '(' identifier							(. s = t.val; .)
+	"in" Expr<out e1> ')' Expr<out e2>			(. expr = new FunctionCall("for", e1, new FunctionExpression(new Identifier(s), e2)); .)
+| "break"										(. expr = new BreakExpression(); .)
+| "next"										(. expr = new NextExpression(); .)
+| '{' ExprLine<es> '}'							(. expr = new CompoundExpression(es); .)
+| LeftAssign<out expr>
+.
+
+LeftAssign<out Expression expr>					(. Expression e; var fs = new Stack<string>(); var es = new Stack<Expression>(); .)
+= Assign<out expr>								(. es.Push(expr); .)
+  { ("<-" | "<<-")								(. fs.Push(t.val); .)
+    Expr<out e>									(. es.Push(e); .)
+  }												(. while (fs.Count > 0) { var op2 = es.Pop(); expr = new FunctionCall(fs.Pop(), es.Pop(), op2); es.Push(expr); } .)
+.
+
+Assign<out Expression expr>						(. Expression e; var fs = new Stack<string>(); var es = new Stack<Expression>(); .)
+= RightAssign<out expr>							(. es.Push(expr); .)
+  { '='	Expr<out e>								(. es.Push(e); fs.Push("="); .)
+  }												(. while (fs.Count > 0) { var op2 = es.Pop(); expr = new FunctionCall(fs.Pop(), es.Pop(), op2); es.Push(expr); } .)
+.
+
+RightAssign<out Expression expr>				(. Expression expr2; string f = ""; .)
+= Tilde<out expr>
+  { ("->" | "->>")								(. f = t.val; .)
+    Tilde<out expr2>							(. expr = new FunctionCall(f, expr, expr2); .)
+  }
+.
+
+Tilde<out Expression expr> 						(. Expression expr2; .)
+= Disjunct<out expr>
+  [ '~'	Disjunct<out expr2>						(. expr = new FunctionCall("~", expr, expr2); .)
+  ]
+.
+
+Disjunct<out Expression expr>					(. Expression expr2; string f = ""; .)
+= Conjunct<out expr>
+  { ('|' | "||")								(. f = t.val; .)
+    Conjunct<out expr2>							(. expr = new FunctionCall(f, expr, expr2); .)
+  }
+.
+
+Conjunct<out Expression expr>					(. Expression expr2; string f = ""; .)
+= Negation<out expr>
+  { ('&' | "&&")								(. f = t.val; .)
+    Negation<out expr2>							(. expr = new FunctionCall(f, expr, expr2); .)
+  }
+.
+
+Negation<out Expression expr>					(. expr = null; .)
+= '!' Logical<out expr>							(. expr = new FunctionCall("!", expr); .)
+| Logical<out expr>	
+.
+
+Logical<out Expression expr>					(. Expression expr2; string f = ""; .)
+= Sum<out expr>
+  { (">" | ">=" | "<" | "<=" | "==" | "!=" )	(. f = t.val; .)
+    Sum<out expr2>								(. expr = new FunctionCall(f, expr, expr2); .)
+  }
+.
+
+Sum<out Expression expr>						(. Expression expr2; string f = ""; .)
+= Product<out expr>
+  { ("+" | "-" )								(. f = t.val; .)
+    Product<out expr2>							(. expr = new FunctionCall(f, expr, expr2); .)
+  }
+.
+
+Product<out Expression expr>					(. Expression expr2; string f = ""; .)
+= InfixOp<out expr>
+  { ("*" | "/" )								(. f = t.val; .)
+    InfixOp<out expr2>							(. expr = new FunctionCall(f, expr, expr2); .)
+  }
+.
+
+InfixOp<out Expression expr>					(. Expression expr2; string f = ""; .)
+= Sequence<out expr>
+  { infixOp										(. f = t.val; .)
+    Sequence<out expr2>							(. expr = new FunctionCall(f, expr, expr2); .)
+  }
+.
+
+Sequence<out Expression expr>					(. Expression expr2; .)
+= Sign<out expr>
+  [ ':'	Sign<out expr2>							(. expr = new FunctionCall("seq", expr, expr2); .)
+  ]
+.
+
+Sign<out Expression expr>						(. Expression e; expr = null; .)
+= '+' Power<out e>								(. expr = new FunctionCall("+", e); .)
+| '-' Power<out e>								(. expr = new FunctionCall("-", e); .)
+| Power<out expr>
+.
+
+Power<out Expression expr>						(. Expression e; var fs = new Stack<string>(); var es = new Stack<Expression>(); .)
+= Index<out expr>								(. es.Push(expr); .)
+  { '^'	Index<out e>							(. es.Push(e); fs.Push("^"); .)
+  }												(. while(fs.Count > 0) { var op2 = es.Pop(); expr = new FunctionCall(fs.Pop(), es.Pop(), op2); es.Push(expr); } .)
+.
+
+Index<out Expression expr>						(. Expression expr2; .)
+= SlotExpr<out expr>
+  { ( '[' Expr<out expr2> ']'				(. expr = new FunctionCall("[", expr, expr2); .)
+    | "[[" Expr<out expr2> "]]"				(. expr = new FunctionCall("[[", expr, expr2); .)
+	)
+  }
+.
+
+SlotExpr<out Expression expr>					(. Expression expr2; string f = ""; .)
+= FunctionCall<out expr>
+  [ ("$" | "@" )								(. f = t.val; .)
+    FunctionCall<out expr2>						(. expr = new FunctionCall(f, expr, expr2); .)
+  ]
+.
+
+FunctionCall<out Expression expr>				(. Expression e; var args = new List<Expression>(); .)
+= BasicExpr<out expr>
+  [ '('											(. insideFunctionActuals.Push(true); .)
+  	[ CallActual<out e>								(. args.Add(e); .)
+	  { ',' CallActual<out e>							(. args.Add(e); .)
+	  } ]										(. insideFunctionActuals.Pop(); .)
+	 ')' 										(. expr = new FunctionCall(expr, args); .)
+  ]
+.
+
+CallActual<out Expression expr>	
+=  Expr<out expr>								(. 
+													var fc = expr as FunctionCall;
+													if (fc != null) {
+														var name = fc.Function as Identifier;
+														if (name != null && name.ToString().Equals("=")) {
+															expr = new IdentifierWithDefault(name.ToString(), fc.Arguments[1]);
+														}
+													}
+												.)
+.
+
+BasicExpr<out Expression expr>					(. string s = null; Expression e = null; expr = null; .)
+= numericLit									(. expr = new Literal(Double.Parse(t.val)); .)
+| "NULL"										(. expr = Literal.NULL; .)
+| "NA"											(. expr = Literal.NA; .)
+| "NA_integer_"									(. expr = Literal.NAInteger; .)
+| "NA_real_"									(. expr = Literal.NAReal; .)
+| "NA_complex_"									(. expr = Literal.NAComplex; .)
+| "NA_character_"								(. expr = Literal.NACharacter; .)
+| "TRUE"										(. expr = Literal.True; .)
+| "FALSE"										(. expr = Literal.False; .)
+| "Inf"											(. expr = Literal.Inf; .)
+| "NaN"											(. expr = Literal.NaN; .)
+| Name<out expr> [ ("::"|":::") Name<out e>]	(. if (s != null) { expr = new QualifiedIdentifier(expr,e); } .)
+| '(' Expr<out expr> ')'
+.
+
+Name<out Expression expr>						(. expr = null; .)
+= stringLit										(. expr = new Literal(t.val); .)
+| identifier									(. expr = new Identifier(t.val); .)
+.
+
+ArgList<.List<Identifier> exprs.>				(. Identifier e; .)
+= FormalArg<out e>								(. exprs.Add(e); e = null; .)
+  {',' FormalArg<out e>}						(. if (e != null) exprs.Add(e); .)
+.
+
+FormalArg<out Identifier expr>					(. expr = null; Expression dft = null; string name; .)
+= identifier									(. name = t.val; .)
+	[ '=' Expr<out dft> ]						(. expr = dft == null ? new Identifier(name) : new IdentifierWithDefault(name, dft); .)
+| "..."											(. expr = new Ellipsis(); .)
+.
+
+END R.

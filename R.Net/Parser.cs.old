@@ -1,0 +1,733 @@
+
+using System;
+using System.Collections.Generic;
+
+namespace R.Net {
+
+
+
+public class Parser {
+	public const int _EOF = 0;
+	public const int _identifier = 1;
+	public const int _numericLit = 2;
+	public const int _stringLit = 3;
+	public const int _infixOp = 4;
+	public const int maxT = 63;
+
+	const bool T = true;
+	const bool x = false;
+	const int minErrDist = 2;
+	
+	public Scanner scanner;
+	public Errors  errors;
+
+	public Token t;    // last recognized token
+	public Token la;   // lookahead token
+	int errDist = minErrDist;
+
+public List<Expression> Expressions = new List<Expression>();
+	private Stack<bool> insideFunctionActuals = new Stack<bool>();
+	//private Func<Expression,Expression> quote = global::R.Net.FunctionCall.Quote;
+
+	// Utility constructor
+	 public Parser(string text)
+        :this(new Scanner(new System.IO.MemoryStream(System.Text.Encoding.ASCII.GetBytes(text))))
+    {
+    }
+	
+
+
+	public Parser(Scanner scanner) {
+		this.scanner = scanner;
+		errors = new Errors();
+	}
+
+	void SynErr (int n) {
+		if (errDist >= minErrDist) errors.SynErr(la.line, la.col, n);
+		errDist = 0;
+	}
+
+	public void SemErr (string msg) {
+		if (errDist >= minErrDist) errors.SemErr(t.line, t.col, msg);
+		errDist = 0;
+	}
+	
+	void Get () {
+		for (;;) {
+			t = la;
+			la = scanner.Scan();
+			if (la.kind <= maxT) { ++errDist; break; }
+
+			la = t;
+		}
+	}
+	
+	void Expect (int n) {
+		if (la.kind==n) Get(); else { SynErr(n); }
+	}
+	
+	bool StartOf (int s) {
+		return set[s, la.kind];
+	}
+	
+	void ExpectWeak (int n, int follow) {
+		if (la.kind == n) Get();
+		else {
+			SynErr(n);
+			while (!StartOf(follow)) Get();
+		}
+	}
+
+
+	bool WeakSeparator(int n, int syFol, int repFol) {
+		int kind = la.kind;
+		if (kind == n) {Get(); return true;}
+		else if (StartOf(repFol)) {return false;}
+		else {
+			SynErr(n);
+			while (!(set[syFol, kind] || set[repFol, kind] || set[0, kind])) {
+				Get();
+				kind = la.kind;
+			}
+			return StartOf(syFol);
+		}
+	}
+
+	
+	void R() {
+		ExprList(this.Expressions);
+	}
+
+	void ExprList(List<Expression> es) {
+		ExprLine(es);
+		while (la.kind == 5) {
+			Get();
+			if (StartOf(1)) {
+				ExprLine(es);
+			}
+		}
+	}
+
+	void ExprLine(List<Expression> es) {
+		Expression e; 
+		Expr(out e);
+		es.Add(e); 
+		while (la.kind == 6) {
+			Get();
+			Expr(out e);
+			es.Add(e); 
+		}
+	}
+
+	void Expr(out Expression expr) {
+		expr = null; Expression e1=null, e2=null, e3=null; string s; var args = new List<Identifier>(); var es = new List<Expression>(); 
+		switch (la.kind) {
+		case 7: {
+			Get();
+			Expect(8);
+			while (la.kind == 1 || la.kind == 62) {
+				ArgList(args);
+			}
+			Expect(9);
+			Expr(out e1);
+			expr = new FunctionExpression(args, e1); 
+			break;
+		}
+		case 10: {
+			Get();
+			Expect(8);
+			Expr(out e1);
+			Expect(9);
+			Expr(out e2);
+			if (la.kind == 11) {
+				Get();
+				Expr(out e3);
+			}
+			expr = e3 == null ? new FunctionCall("if", e1, e2) : new FunctionCall("if", e1, e2, e3); 
+			break;
+		}
+		case 12: {
+			Get();
+			Expect(8);
+			Expr(out e1);
+			Expect(9);
+			Expr(out e2);
+			expr = new FunctionCall("while", e1, e2); 
+			break;
+		}
+		case 13: {
+			Get();
+			Expr(out e1);
+			expr = new FunctionCall("repeat", e1); 
+			break;
+		}
+		case 14: {
+			Get();
+			Expect(8);
+			Expect(1);
+			s = t.val; 
+			Expect(15);
+			Expr(out e1);
+			Expect(9);
+			Expr(out e2);
+			expr = new FunctionCall("for", e1, new FunctionExpression(new Identifier(s), e2)); 
+			break;
+		}
+		case 16: {
+			Get();
+			expr = new BreakExpression(); 
+			break;
+		}
+		case 17: {
+			Get();
+			expr = new NextExpression(); 
+			break;
+		}
+		case 18: {
+			Get();
+			ExprLine(es);
+			Expect(19);
+			expr = new CompoundExpression(es); 
+			break;
+		}
+		case 1: case 2: case 3: case 8: case 30: case 37: case 38: case 50: case 51: case 52: case 53: case 54: case 55: case 56: case 57: case 58: case 59: {
+			LeftAssign(out expr);
+			break;
+		}
+		default: SynErr(64); break;
+		}
+	}
+
+	void ArgList(List<Identifier> exprs) {
+		Identifier e; 
+		FormalArg(out e);
+		exprs.Add(e); e = null; 
+		while (la.kind == 49) {
+			Get();
+			FormalArg(out e);
+		}
+		if (e != null) exprs.Add(e); 
+	}
+
+	void LeftAssign(out Expression expr) {
+		Expression e; var fs = new Stack<string>(); var es = new Stack<Expression>(); 
+		Assign(out expr);
+		es.Push(expr); 
+		while (la.kind == 20 || la.kind == 21) {
+			if (la.kind == 20) {
+				Get();
+			} else {
+				Get();
+			}
+			fs.Push(t.val); 
+			Expr(out e);
+			es.Push(e); 
+		}
+		while (fs.Count > 0) { var op2 = es.Pop(); expr = new FunctionCall(fs.Pop(), es.Pop(), op2); es.Push(expr); } 
+	}
+
+	void Assign(out Expression expr) {
+		Expression e; var fs = new Stack<string>(); var es = new Stack<Expression>(); 
+		RightAssign(out expr);
+		es.Push(expr); 
+		while (la.kind == 22) {
+			Get();
+			Expr(out e);
+			es.Push(e); fs.Push("="); 
+		}
+		while (fs.Count > 0) { var op2 = es.Pop(); expr = new FunctionCall(fs.Pop(), es.Pop(), op2); es.Push(expr); } 
+	}
+
+	void RightAssign(out Expression expr) {
+		Expression expr2; string f = ""; 
+		Tilde(out expr);
+		while (la.kind == 23 || la.kind == 24) {
+			if (la.kind == 23) {
+				Get();
+			} else {
+				Get();
+			}
+			f = t.val; 
+			Tilde(out expr2);
+			expr = new FunctionCall(f, expr, expr2); 
+		}
+	}
+
+	void Tilde(out Expression expr) {
+		Expression expr2; 
+		Disjunct(out expr);
+		if (la.kind == 25) {
+			Get();
+			Disjunct(out expr2);
+			expr = new FunctionCall("~", expr, expr2); 
+		}
+	}
+
+	void Disjunct(out Expression expr) {
+		Expression expr2; string f = ""; 
+		Conjunct(out expr);
+		while (la.kind == 26 || la.kind == 27) {
+			if (la.kind == 26) {
+				Get();
+			} else {
+				Get();
+			}
+			f = t.val; 
+			Conjunct(out expr2);
+			expr = new FunctionCall(f, expr, expr2); 
+		}
+	}
+
+	void Conjunct(out Expression expr) {
+		Expression expr2; string f = ""; 
+		Negation(out expr);
+		while (la.kind == 28 || la.kind == 29) {
+			if (la.kind == 28) {
+				Get();
+			} else {
+				Get();
+			}
+			f = t.val; 
+			Negation(out expr2);
+			expr = new FunctionCall(f, expr, expr2); 
+		}
+	}
+
+	void Negation(out Expression expr) {
+		expr = null; 
+		if (la.kind == 30) {
+			Get();
+			Logical(out expr);
+			expr = new FunctionCall("!", expr); 
+		} else if (StartOf(2)) {
+			Logical(out expr);
+		} else SynErr(65);
+	}
+
+	void Logical(out Expression expr) {
+		Expression expr2; string f = ""; 
+		Sum(out expr);
+		while (StartOf(3)) {
+			switch (la.kind) {
+			case 31: {
+				Get();
+				break;
+			}
+			case 32: {
+				Get();
+				break;
+			}
+			case 33: {
+				Get();
+				break;
+			}
+			case 34: {
+				Get();
+				break;
+			}
+			case 35: {
+				Get();
+				break;
+			}
+			case 36: {
+				Get();
+				break;
+			}
+			}
+			f = t.val; 
+			Sum(out expr2);
+			expr = new FunctionCall(f, expr, expr2); 
+		}
+	}
+
+	void Sum(out Expression expr) {
+		Expression expr2; string f = ""; 
+		Product(out expr);
+		while (la.kind == 37 || la.kind == 38) {
+			if (la.kind == 37) {
+				Get();
+			} else {
+				Get();
+			}
+			f = t.val; 
+			Product(out expr2);
+			expr = new FunctionCall(f, expr, expr2); 
+		}
+	}
+
+	void Product(out Expression expr) {
+		Expression expr2; string f = ""; 
+		InfixOp(out expr);
+		while (la.kind == 39 || la.kind == 40) {
+			if (la.kind == 39) {
+				Get();
+			} else {
+				Get();
+			}
+			f = t.val; 
+			InfixOp(out expr2);
+			expr = new FunctionCall(f, expr, expr2); 
+		}
+	}
+
+	void InfixOp(out Expression expr) {
+		Expression expr2; string f = ""; 
+		Sequence(out expr);
+		while (la.kind == 4) {
+			Get();
+			f = t.val; 
+			Sequence(out expr2);
+			expr = new FunctionCall(f, expr, expr2); 
+		}
+	}
+
+	void Sequence(out Expression expr) {
+		Expression expr2; 
+		Sign(out expr);
+		if (la.kind == 41) {
+			Get();
+			Sign(out expr2);
+			expr = new FunctionCall("seq", expr, expr2); 
+		}
+	}
+
+	void Sign(out Expression expr) {
+		Expression e; expr = null; 
+		if (la.kind == 37) {
+			Get();
+			Power(out e);
+			expr = new FunctionCall("+", e); 
+		} else if (la.kind == 38) {
+			Get();
+			Power(out e);
+			expr = new FunctionCall("-", e); 
+		} else if (StartOf(4)) {
+			Power(out expr);
+		} else SynErr(66);
+	}
+
+	void Power(out Expression expr) {
+		Expression e; var fs = new Stack<string>(); var es = new Stack<Expression>(); 
+		Index(out expr);
+		es.Push(expr); 
+		while (la.kind == 42) {
+			Get();
+			Index(out e);
+			es.Push(e); fs.Push("^"); 
+		}
+		while(fs.Count > 0) { var op2 = es.Pop(); expr = new FunctionCall(fs.Pop(), es.Pop(), op2); es.Push(expr); } 
+	}
+
+	void Index(out Expression expr) {
+		Expression expr2; 
+		SlotExpr(out expr);
+		while (la.kind == 43 || la.kind == 45) {
+			if (la.kind == 43) {
+				Get();
+				Expr(out expr2);
+				Expect(44);
+				expr = new FunctionCall("[", expr, expr2); 
+			} else {
+				Get();
+				Expr(out expr2);
+				Expect(46);
+				expr = new FunctionCall("[[", expr, expr2); 
+			}
+		}
+	}
+
+	void SlotExpr(out Expression expr) {
+		Expression expr2; string f = ""; 
+		FunctionCall(out expr);
+		if (la.kind == 47 || la.kind == 48) {
+			if (la.kind == 47) {
+				Get();
+			} else {
+				Get();
+			}
+			f = t.val; 
+			FunctionCall(out expr2);
+			expr = new FunctionCall(f, expr, expr2); 
+		}
+	}
+
+	void FunctionCall(out Expression expr) {
+		Expression e; var args = new List<Expression>(); 
+		BasicExpr(out expr);
+		if (la.kind == 8) {
+			Get();
+			insideFunctionActuals.Push(true); 
+			if (StartOf(1)) {
+				CallActual(out e);
+				args.Add(e); 
+				while (la.kind == 49) {
+					Get();
+					CallActual(out e);
+					args.Add(e); 
+				}
+			}
+			insideFunctionActuals.Pop(); 
+			Expect(9);
+			expr = new FunctionCall(expr, args); 
+		}
+	}
+
+	void BasicExpr(out Expression expr) {
+		string s = null; Expression e = null; expr = null; 
+		switch (la.kind) {
+		case 2: {
+			Get();
+			expr = new Literal(Double.Parse(t.val)); 
+			break;
+		}
+		case 50: {
+			Get();
+			expr = Literal.NULL; 
+			break;
+		}
+		case 51: {
+			Get();
+			expr = Literal.NA; 
+			break;
+		}
+		case 52: {
+			Get();
+			expr = Literal.NAInteger; 
+			break;
+		}
+		case 53: {
+			Get();
+			expr = Literal.NAReal; 
+			break;
+		}
+		case 54: {
+			Get();
+			expr = Literal.NAComplex; 
+			break;
+		}
+		case 55: {
+			Get();
+			expr = Literal.NACharacter; 
+			break;
+		}
+		case 56: {
+			Get();
+			expr = Literal.True; 
+			break;
+		}
+		case 57: {
+			Get();
+			expr = Literal.False; 
+			break;
+		}
+		case 58: {
+			Get();
+			expr = Literal.Inf; 
+			break;
+		}
+		case 59: {
+			Get();
+			expr = Literal.NaN; 
+			break;
+		}
+		case 1: case 3: {
+			Name(out expr);
+			if (la.kind == 60 || la.kind == 61) {
+				if (la.kind == 60) {
+					Get();
+				} else {
+					Get();
+				}
+				Name(out e);
+			}
+			if (s != null) { expr = new QualifiedIdentifier(expr,e); } 
+			break;
+		}
+		case 8: {
+			Get();
+			Expr(out expr);
+			Expect(9);
+			break;
+		}
+		default: SynErr(67); break;
+		}
+	}
+
+	void CallActual(out Expression expr) {
+		Expr(out expr);
+		var fc = expr as FunctionCall;
+		if (fc != null) {
+		var name = fc.Function as Identifier;
+		if (name != null && name.ToString().Equals("=")) {
+			expr = new IdentifierWithDefault(name.ToString(), fc.Arguments[1]);
+		}
+		}
+		
+	}
+
+	void Name(out Expression expr) {
+		expr = null; 
+		if (la.kind == 3) {
+			Get();
+			expr = new Literal(t.val); 
+		} else if (la.kind == 1) {
+			Get();
+			expr = new Identifier(t.val); 
+		} else SynErr(68);
+	}
+
+	void FormalArg(out Identifier expr) {
+		expr = null; Expression dft = null; string name; 
+		if (la.kind == 1) {
+			Get();
+			name = t.val; 
+			if (la.kind == 22) {
+				Get();
+				Expr(out dft);
+			}
+			expr = dft == null ? new Identifier(name) : new IdentifierWithDefault(name, dft); 
+		} else if (la.kind == 62) {
+			Get();
+			expr = new Ellipsis(); 
+		} else SynErr(69);
+	}
+
+
+
+	public void Parse() {
+		la = new Token();
+		la.val = "";		
+		Get();
+		R();
+		Expect(0);
+
+	}
+	
+try 
+	{	        
+			static readonly bool[,] set = {
+		{_T,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x},
+		{_x,_T,_T,_T, _x,_x,_x,_T, _T,_x,_T,_x, _T,_T,_T,_x, _T,_T,_T,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_T,_x, _x,_x,_x,_x, _x,_T,_T,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_T,_T, _T,_T,_T,_T, _T,_T,_T,_T, _x,_x,_x,_x, _x},
+		{_x,_T,_T,_T, _x,_x,_x,_x, _T,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_T,_T,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_T,_T, _T,_T,_T,_T, _T,_T,_T,_T, _x,_x,_x,_x, _x},
+		{_x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_T, _T,_T,_T,_T, _T,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x},
+		{_x,_T,_T,_T, _x,_x,_x,_x, _T,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_x,_x, _x,_x,_T,_T, _T,_T,_T,_T, _T,_T,_T,_T, _x,_x,_x,_x, _x}
+
+	};
+	}
+	catch (Exception)
+	{
+		
+		throw;
+	}
+} // end Parser
+
+
+public class Errors {
+	public int count = 0;                                    // number of errors detected
+	public System.IO.TextWriter errorStream = Console.Out;   // error messages go to this stream
+	public string errMsgFormat = "-- line {0} col {1}: {2}"; // 0=line, 1=column, 2=text
+
+	public virtual void SynErr (int line, int col, int n) {
+		string s;
+		switch (n) {
+			case 0: s = "EOF expected"; break;
+			case 1: s = "identifier expected"; break;
+			case 2: s = "numericLit expected"; break;
+			case 3: s = "stringLit expected"; break;
+			case 4: s = "infixOp expected"; break;
+			case 5: s = "\"\\n\" expected"; break;
+			case 6: s = "\";\" expected"; break;
+			case 7: s = "\"function\" expected"; break;
+			case 8: s = "\"(\" expected"; break;
+			case 9: s = "\")\" expected"; break;
+			case 10: s = "\"if\" expected"; break;
+			case 11: s = "\"else\" expected"; break;
+			case 12: s = "\"while\" expected"; break;
+			case 13: s = "\"repeat\" expected"; break;
+			case 14: s = "\"for\" expected"; break;
+			case 15: s = "\"in\" expected"; break;
+			case 16: s = "\"break\" expected"; break;
+			case 17: s = "\"next\" expected"; break;
+			case 18: s = "\"{\" expected"; break;
+			case 19: s = "\"}\" expected"; break;
+			case 20: s = "\"<-\" expected"; break;
+			case 21: s = "\"<<-\" expected"; break;
+			case 22: s = "\"=\" expected"; break;
+			case 23: s = "\"->\" expected"; break;
+			case 24: s = "\"->>\" expected"; break;
+			case 25: s = "\"~\" expected"; break;
+			case 26: s = "\"|\" expected"; break;
+			case 27: s = "\"||\" expected"; break;
+			case 28: s = "\"&\" expected"; break;
+			case 29: s = "\"&&\" expected"; break;
+			case 30: s = "\"!\" expected"; break;
+			case 31: s = "\">\" expected"; break;
+			case 32: s = "\">=\" expected"; break;
+			case 33: s = "\"<\" expected"; break;
+			case 34: s = "\"<=\" expected"; break;
+			case 35: s = "\"==\" expected"; break;
+			case 36: s = "\"!=\" expected"; break;
+			case 37: s = "\"+\" expected"; break;
+			case 38: s = "\"-\" expected"; break;
+			case 39: s = "\"*\" expected"; break;
+			case 40: s = "\"/\" expected"; break;
+			case 41: s = "\":\" expected"; break;
+			case 42: s = "\"^\" expected"; break;
+			case 43: s = "\"[\" expected"; break;
+			case 44: s = "\"]\" expected"; break;
+			case 45: s = "\"[[\" expected"; break;
+			case 46: s = "\"]]\" expected"; break;
+			case 47: s = "\"$\" expected"; break;
+			case 48: s = "\"@\" expected"; break;
+			case 49: s = "\",\" expected"; break;
+			case 50: s = "\"NULL\" expected"; break;
+			case 51: s = "\"NA\" expected"; break;
+			case 52: s = "\"NA_integer_\" expected"; break;
+			case 53: s = "\"NA_real_\" expected"; break;
+			case 54: s = "\"NA_complex_\" expected"; break;
+			case 55: s = "\"NA_character_\" expected"; break;
+			case 56: s = "\"TRUE\" expected"; break;
+			case 57: s = "\"FALSE\" expected"; break;
+			case 58: s = "\"Inf\" expected"; break;
+			case 59: s = "\"NaN\" expected"; break;
+			case 60: s = "\"::\" expected"; break;
+			case 61: s = "\":::\" expected"; break;
+			case 62: s = "\"...\" expected"; break;
+			case 63: s = "??? expected"; break;
+			case 64: s = "invalid Expr"; break;
+			case 65: s = "invalid Negation"; break;
+			case 66: s = "invalid Sign"; break;
+			case 67: s = "invalid BasicExpr"; break;
+			case 68: s = "invalid Name"; break;
+			case 69: s = "invalid FormalArg"; break;
+
+			default: s = "error " + n; break;
+		}
+		errorStream.WriteLine(errMsgFormat, line, col, s);
+		count++;
+	}
+
+	public virtual void SemErr (int line, int col, string s) {
+		errorStream.WriteLine(errMsgFormat, line, col, s);
+		count++;
+	}
+	
+	public virtual void SemErr (string s) {
+		errorStream.WriteLine(s);
+		count++;
+	}
+	
+	public virtual void Warning (int line, int col, string s) {
+		errorStream.WriteLine(errMsgFormat, line, col, s);
+	}
+	
+	public virtual void Warning(string s) {
+		errorStream.WriteLine(s);
+	}
+} // Errors
+
+
+public class FatalError: Exception {
+	public FatalError(string m): base(m) {}
+}
+}
